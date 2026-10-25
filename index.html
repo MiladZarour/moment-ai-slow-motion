@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moment — Hold to slow</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="./index.html"><span class="brand-icon">◒</span> moment<span class="brand-dot">.</span></a><span class="local-badge"><i></i> Local video playground</span></header>
+    <section class="intro"><div class="eyebrow">A LITTLE MORE TIME IN THE MOMENT</div><h1>Make the good parts<br><em>last a little longer.</em></h1><p>Drop in a video. Hold the corner. Find the details you missed.</p></section>
+    <section class="studio" aria-label="Video studio">
+      <div class="studio-bar"><span><span class="small-dot"></span> YOUR CANVAS</span><span id="fileName">No video selected</span></div>
+      <div class="stage" id="stage">
+        <video id="video" playsinline preload="metadata"></video>
+        <div class="empty" id="empty"><div class="upload-icon">↥</div><h2>Every video has a moment.</h2><p>Drop yours here to find it.</p><button class="primary" id="choose">Choose a video <span>↗</span></button><small>MP4, WebM, MOV · stays on your device</small></div>
+        <div class="slow-tag" id="slowTag">● &nbsp; SLOW MOTION <span id="liveSpeed">0.25×</span></div>
+        <button id="hold" class="hold" disabled aria-label="Hold for slow motion"><span class="hold-symbol">◔</span><span>HOLD TO SLOW</span><small>Release to return to 1×</small></button>
+        <div class="drop-overlay">Drop your video here</div>
+      </div>
+      <div class="transport"><button id="play" class="play" disabled aria-label="Play">▶</button><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="100" value="0" step="0.01" aria-label="Video position" disabled><span id="duration">0:00</span><button id="mute" class="icon-button" disabled aria-label="Mute">♪</button><button id="full" class="icon-button" disabled aria-label="Fullscreen">⛶</button></div>
+      <div class="settings"><div class="speed-setting"><span>Slow it down to</span><div class="speeds" aria-label="Slow motion speed"><button data-speed="0.125" aria-pressed="false">⅛×</button><button data-speed="0.25" aria-pressed="true" class="selected">¼×</button><button data-speed="0.5" aria-pressed="false">½×</button></div></div><button id="replace" class="text-button">↥ &nbsp; Change video</button></div>
+    </section>
+    <div class="footnotes"><p><span>✦</span> Press & hold the corner button, or hold <kbd>S</kbd>, for slow motion.</p><p>Made for the moments between frames.</p></div>
+    <p class="status" id="status" role="status">Your video stays private. Nothing is uploaded.</p>
+    <input id="file" type="file" accept="video/*" hidden>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
