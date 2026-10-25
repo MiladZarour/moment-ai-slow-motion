@@ -69,7 +69,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if path == '/api/health':
-            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 4, 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
+            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 5, 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
         if path.startswith('/api/jobs/'):
             with LOCK:
                 job = json.loads(json.dumps(JOBS.get(path.split('/')[-1], {})))

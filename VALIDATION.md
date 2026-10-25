@@ -2,6 +2,12 @@
 
 ## Current on-demand implementation
 
+Continuous playback update (API version 5): live windows are now video-only fragmented MP4s appended to one MediaSource buffer. Four windows share a RIFE model load, and each is published while the rest of the batch is still processing. Live preview fits within 960×540; saving regenerates the requested slowed sections at up to 1280×720. Browser tests confirmed stable stream URLs across boundaries, correct source-time/audio-clock synchronization, release cancellation, original-file playback, and 720p clip-only output with distinct interpolated frames.
+
+Sustained 720p fixture measurements on this PC: quarter-speed initial buffer 2.926s, then 0.0012s total waiting during 16 seconds of playback; half-speed initial buffer 3.192s, then 0.0264s total waiting during 9.5 seconds. An existing long source at a later seek position needed 3.663s initially, then 0.0281s waiting during a 12-second quarter-speed hold, with source audio clock within 0.04 source seconds. These are measured test cases, not general performance guarantees. Initial latency remains; this is not Samsung's persistent native inference implementation.
+
+A 19-second half-speed hold exercised old-buffer eviction: playback advanced 9.487 source seconds, retained only frames from 5.500 seconds onward, and measured 0.0405 seconds total waiting. This verifies the buffer does not grow indefinitely during sustained holds.
+
 Direct playback update (API version 4): compatible input was decoded by the browser and used as the original source, with no `preview.mp4` conversion file created. On-demand AI windows and section-only export passed against that original-file path, including audio duration checks. A previously uploaded long 1080p file reopened after engine restart and decoded at its original dimensions. The superseded full-video conversion was stopped. Incompatible-format fallback reports `out_time_us` from FFmpeg instead of a fixed percentage; its `convertedSeconds` field was verified after a real conversion. Ready-job metadata now persists across restarts.
 
 Upload recovery: the production listener was still an older process and logged HTTP 413 for an upload over its old 1 GB limit. The launcher now checks API version 3 and restarts an idle outdated engine. The active listener was upgraded and reports no duration/file-size cap, plus section export support. A real Chromium file upload reached ready with zero AI calls. A simulated stale health response was rejected before any upload request was sent.

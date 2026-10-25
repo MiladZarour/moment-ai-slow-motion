@@ -11,7 +11,7 @@ const livePlayer = new LiveSlowPlayer(video, $('aiVideo'), (path, body) => api(p
     $('bufferTag').hidden = state !== 'buffering';
     $('aiLabel').textContent = state === 'buffering' ? 'GPU generating frames on demand' : state === 'playing' ? 'AI slow motion · live GPU windows' : 'AI engine standing by';
     $('aiMessage').textContent = message;
-    $('aiDetail').textContent = state === 'idle' ? 'No AI work until you hold' : 'RIFE · local GPU';
+    $('aiDetail').textContent = state === 'idle' ? 'No AI work until you hold' : 'RIFE · smooth 540p preview';
     if (state === 'playing') { $('play').textContent = 'Ⅱ'; $('play').setAttribute('aria-label', 'Pause'); }
   },
   position(position) { showPosition(position); },
@@ -152,7 +152,7 @@ async function load(file) {
   if (!file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v|ogv|mkv)$/i.test(file.name)) { $('status').textContent = 'Please choose a video file.'; return; }
   try {
     const health = await api('/api/health');
-    if (health.apiVersion !== 4) { $('status').textContent = 'An older engine is running. Open Start Moment.cmd to update it before uploading.'; return; }
+    if (health.apiVersion !== 5) { $('status').textContent = 'An older engine is running. Open Start Moment.cmd to update it before uploading.'; return; }
   } catch { $('status').textContent = 'The local engine is offline. Open Start Moment.cmd, then reload this page.'; return; }
   if (preparing || exporting) return;
   stopSlow(); video.pause(); clearTimeout(pollTimer);
@@ -290,6 +290,11 @@ $('full').addEventListener('click', async () => { try { if (document.fullscreenE
 async function init() {
   try {
     const health = await api('/api/health'); online = health.engine;
+    if (health.apiVersion !== 5) {
+      online = false; $('aiLabel').textContent = 'Engine update needed';
+      $('aiMessage').textContent = 'Open Start Moment.cmd to load the smooth playback engine, then refresh this page.';
+      availability(); return;
+    }
     supportsSectionExport = health.sectionExport === true;
     $('aiLabel').textContent = online ? 'RIFE engine connected' : 'RIFE engine is missing';
     $('aiMessage').textContent = 'Load a video for normal playback. Hold the corner to start GPU frame generation exactly where you are watching.';

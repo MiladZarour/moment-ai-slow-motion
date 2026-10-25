@@ -19,6 +19,9 @@ CHUNK_SECONDS = .5
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 GEOMETRY = "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
 SCALE = GEOMETRY + ',fps=30'
+PREVIEW_GEOMETRY = "scale=w='min(960,iw)':h='min(540,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
+PREVIEW_SCALE = PREVIEW_GEOMETRY + ',fps=30'
+BATCH_WINDOWS = 4
 
 
 def update(item, **values):
@@ -144,13 +147,105 @@ def request_chunk(job, index, session):
                  not CANCEL[previous['token']].is_set())):
             return dict(previous)
         token = uuid.uuid4().hex
-        chunk = {'index': index, 'token': token, 'session': session, 'phase': 'queued', 'progress': 0,
-                 'start': index * CHUNK_SECONDS,
-                 'end': min(job['duration'], (index + 1) * CHUNK_SECONDS)}
         CANCEL[token] = threading.Event()
-        job['chunks'][key] = chunk
-        threading.Thread(target=generate_chunk, args=(job, chunk), daemon=True).start()
-        return dict(chunk)
+        batch = []
+        for offset in range(BATCH_WINDOWS):
+            cursor = index + offset
+            if cursor * CHUNK_SECONDS >= job['duration']:
+                break
+            previous = job['chunks'].get(str(cursor))
+            if offset and previous and previous['phase'] == 'ready':
+                break
+            chunk = {'index': cursor, 'token': token, 'session': session, 'phase': 'queued', 'progress': 0,
+                     'start': cursor * CHUNK_SECONDS,
+                     'end': min(job['duration'], (cursor + 1) * CHUNK_SECONDS)}
+            job['chunks'][str(cursor)] = chunk
+            batch.append(chunk)
+        threading.Thread(target=generate_batch, args=(job, batch), daemon=True).start()
+        return dict(batch[0])
+
+
+def generate_batch(job, batch):
+    """One model load per batch; publish windows while RIFE continues generating."""
+    token = batch[0]['token']
+    cancelled = CANCEL[token]
+    folder = DATA / job['id']
+    work = folder / f'work-{token}'
+    frame_in, frame_out = work / 'in', work / 'out'
+    log = folder / 'ai.log'
+    started = time.monotonic()
+    process = None
+    try:
+        with GPU:
+            if cancelled.is_set():
+                raise InterruptedError()
+            frame_in.mkdir(parents=True); frame_out.mkdir()
+            for chunk in batch:
+                update(chunk, phase='decoding', progress=5)
+            length = batch[-1]['end'] - batch[0]['start']
+            decode_start = time.monotonic()
+            run(['ffmpeg', '-hide_banner', '-y', '-ss', str(batch[0]['start']), '-i', folder / job['playbackFile'],
+                 '-t', str(length + 1 / 30), '-an', '-vf', PREVIEW_SCALE, '-q:v', '2', frame_in / '%08d.jpg'], log)
+            count = len(list(frame_in.glob('*.jpg')))
+            if count == 0:
+                raise ValueError('No frames found at this position.')
+            expected = math.ceil(length * 30 - 1e-6) + 1
+            while count < expected:
+                shutil.copyfile(frame_in / f'{count:08}.jpg', frame_in / f'{count+1:08}.jpg'); count += 1
+            if cancelled.is_set():
+                raise InterruptedError()
+            target = (count - 1) * 4 + 1
+            decode_seconds = time.monotonic() - decode_start
+            with LOCK:
+                job['aiInvocations'] += 1
+            for chunk in batch:
+                update(chunk, phase='interpolating', progress=10, previewHeight=540)
+            with open(log, 'ab') as output:
+                process = subprocess.Popen([str(ENGINE / 'rife-ncnn-vulkan.exe'), '-i', str(frame_in),
+                    '-o', str(frame_out), '-m', str(ENGINE / 'rife-v4.6'), '-n', str(target),
+                    '-j', '2:2:1', '-f', '%08d.jpg'], stdout=output, stderr=output, creationflags=NO_WINDOW)
+                for chunk in batch:
+                    offset = round((chunk['start'] - batch[0]['start']) * 120)
+                    frames = max(1, round((chunk['end'] - chunk['start']) * 120))
+                    required = [frame_out / f'{n:08}.jpg' for n in range(offset + 1, offset + frames + 1)]
+                    previous_sizes = None
+                    while True:
+                        if cancelled.wait(.04):
+                            raise InterruptedError()
+                        sizes = tuple(p.stat().st_size if p.exists() else 0 for p in required)
+                        if all(sizes) and sizes == previous_sizes:
+                            break
+                        previous_sizes = sizes
+                        if process.poll() is not None and (process.returncode or not all(sizes)):
+                            raise RuntimeError('RIFE could not finish the frame window. See ai.log.')
+                    update(chunk, phase='encoding', progress=90)
+                    name = f'chunk-{token}-{chunk["index"]}.mp4'
+                    run(['ffmpeg', '-hide_banner', '-y', '-framerate', '120', '-start_number', str(offset + 1),
+                        '-i', frame_out / '%08d.jpg', '-frames:v', str(frames), '-an',
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+                        '-profile:v', 'baseline', '-level:v', '4.2', '-crf', '18', '-pix_fmt', 'yuv420p',
+                        '-g', '60', '-keyint_min', '60', '-sc_threshold', '0', '-video_track_timescale', '15360',
+                        '-movflags', '+frag_keyframe+empty_moov+default_base_moof', folder / name], log)
+                    if cancelled.is_set():
+                        (folder / name).unlink(missing_ok=True)
+                        raise InterruptedError()
+                    update(chunk, phase='ready', progress=100, url=f'/media/{job["id"]}/{name}',
+                           seconds=round(time.monotonic() - started, 2), decodeSeconds=round(decode_seconds, 2))
+                if process.wait():
+                    raise RuntimeError('RIFE inference failed.')
+    except InterruptedError:
+        for chunk in batch:
+            if chunk['phase'] != 'ready':
+                update(chunk, phase='cancelled', progress=0)
+    except Exception as error:
+        for chunk in batch:
+            if chunk['phase'] != 'ready':
+                update(chunk, phase='error', message=str(error))
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate(); process.wait()
+        if work.is_dir() and work.parent.resolve() == folder.resolve():
+            shutil.rmtree(work)
 
 
 def generate_chunk(job, chunk):
@@ -229,6 +324,25 @@ def export_video(job, segments, scope='full'):
     log = folder / 'export.log'
     try:
         pieces = []
+        # Smooth playback uses 540p previews; render requested slow sections at 720p
+        # for saving. This work happens only after the user explicitly saves.
+        hd_cache = job.setdefault('exportChunks', {})
+        needed = sorted({index for start, end, speed in segments if speed != 1
+                         for index in range(int((start + 1e-7) / CHUNK_SECONDS), math.ceil((end - 1e-7) / CHUNK_SECONDS))})
+        for index in needed:
+            preview = job['chunks'].get(str(index))
+            if not preview or preview['phase'] != 'ready':
+                raise ValueError('Replay this section while holding to generate its AI frames before saving.')
+            if hd_cache.get(str(index), {}).get('phase') == 'ready':
+                continue
+            token = uuid.uuid4().hex
+            CANCEL[token] = threading.Event()
+            hd = {'index': index, 'token': token, 'session': 'export', 'phase': 'queued', 'start': preview['start'], 'end': preview['end']}
+            generate_chunk(job, hd)
+            if hd['phase'] != 'ready':
+                raise RuntimeError(hd.get('message', 'Could not render the saved section.'))
+            hd_cache[str(index)] = hd
+            update(job, exportProgress=round(40 * (needed.index(index) + 1) / len(needed)))
         for start, end, speed in segments:
             cursor = start
             while cursor < end - 1e-7:
@@ -236,7 +350,7 @@ def export_video(job, segments, scope='full'):
                     pieces.append((folder / job['playbackFile'], cursor, end - cursor, speed))
                     break
                 index = int((cursor + 1e-7) / CHUNK_SECONDS)
-                chunk = job['chunks'].get(str(index))
+                chunk = hd_cache.get(str(index))
                 if not chunk or chunk['phase'] != 'ready':
                     raise ValueError('A marked section has no AI frames. Replay that section while holding before saving.')
                 stop = min(end, chunk['end'])
@@ -247,7 +361,7 @@ def export_video(job, segments, scope='full'):
                  '-an', '-vf', f'{GEOMETRY},setpts=(PTS-STARTPTS)/{speed},fps=30', '-t', str(length / speed),
                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
                  '-video_track_timescale', '15360', work / f'{i:04}.mp4'], log)
-            update(job, exportProgress=round((i + 1) / len(pieces) * 90))
+            update(job, exportProgress=round(40 + (i + 1) / len(pieces) * 50))
         listing = work / 'concat.txt'
         listing.write_text('\n'.join(f"file '{i:04}.mp4'" for i in range(len(pieces))), encoding='utf-8')
         name = f'moment-{"section-" if scope == "section" else ""}{uuid.uuid4().hex[:8]}.mp4'

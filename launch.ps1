@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $appUrl = 'http://127.0.0.1:8766'
 try { $health = Invoke-RestMethod "$appUrl/api/health" -TimeoutSec 2 } catch { $health = $null }
-if ($health -and $health.apiVersion -ne 4) {
+if ($health -and $health.apiVersion -ne 5) {
     try { Invoke-RestMethod "$appUrl/api/stop" -Method Post -Headers @{'X-Moment-Client'='1'} -TimeoutSec 5 | Out-Null }
     catch { throw 'The older engine is still processing a video. Release Hold and let any save finish, then run Start Moment.cmd again.' }
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -20,5 +20,5 @@ if (-not $health) {
         try { $health = Invoke-RestMethod "$appUrl/api/health" -TimeoutSec 1; break } catch {}
     }
 }
-if (-not $health.engine -or $health.apiVersion -ne 4) { throw 'The updated AI engine could not start. See server-error.log in the project folder.' }
+if (-not $health.engine -or $health.apiVersion -ne 5) { throw 'The updated AI engine could not start. See server-error.log in the project folder.' }
 Start-Process $appUrl

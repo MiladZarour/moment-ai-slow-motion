@@ -58,7 +58,10 @@ if __name__ == '__main__':
     request('/api/live/' + identity, json.dumps({'session': 'integration', 'active': False}).encode())
     chunk_path = ROOT / 'data' / identity / job['chunks']['0']['url'].split('/')[-1]
     ai_stream = probe(chunk_path)['streams'][0]
-    assert ai_stream['r_frame_rate'] == '120/1' and int(ai_stream['nb_frames']) == 60, ai_stream
+    assert ai_stream['r_frame_rate'] == '120/1', ai_stream
+    count = subprocess.check_output(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0',
+                    '-show_entries', 'stream=nb_read_frames', '-of', 'default=nw=1:nk=1', str(chunk_path)], text=True)
+    assert int(count.strip()) == 60, count
     hashes = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(chunk_path), '-an',
                     '-frames:v', '8', '-f', 'framemd5', '-'], text=True)
     frames = [line.split(',')[-1].strip() for line in hashes.splitlines() if not line.startswith('#')]
