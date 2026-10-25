@@ -1,5 +1,29 @@
 # Validation — 25 October 2026
 
+## Current on-demand implementation
+
+Direct playback update (API version 4): compatible input was decoded by the browser and used as the original source, with no `preview.mp4` conversion file created. On-demand AI windows and section-only export passed against that original-file path, including audio duration checks. A previously uploaded long 1080p file reopened after engine restart and decoded at its original dimensions. The superseded full-video conversion was stopped. Incompatible-format fallback reports `out_time_us` from FFmpeg instead of a fixed percentage; its `convertedSeconds` field was verified after a real conversion. Ready-job metadata now persists across restarts.
+
+Upload recovery: the production listener was still an older process and logged HTTP 413 for an upload over its old 1 GB limit. The launcher now checks API version 3 and restarts an idle outdated engine. The active listener was upgraded and reports no duration/file-size cap, plus section export support. A real Chromium file upload reached ready with zero AI calls. A simulated stale health response was rejected before any upload request was sent.
+
+Section-only export: tested two marked sections, right-clicked the first, exported only its selected time range, and checked video/audio durations against the quantized interval divided by playback speed. The exported file has a `moment-section-` name. Escape dismissal, mobile ⋯ menu positioning, and removal were tested in Chromium. Section export is rejected by the client when an older server does not advertise support, preventing an accidental full-video export before restart.
+
+The earlier full-video interpolation implementation described below has been replaced. Current checks passed:
+
+- Upload and ordinary playback leave `aiInvocations` at zero and create no AI windows.
+- Holding starts GPU interpolation at the playhead; each half-second window uses a real next-frame endpoint and produces a 120 fps clip. Only the next window is prefetched, while the hold remains active.
+- Chromium keyboard hold crossed multiple generated windows. Release restored the source position, returned to pause when appropriate, hid the AI player, and cancelled unfinished generation. No new inference calls were started after release.
+- Releasing before any AI window became ready produced no marked section and left no stale AI overlay or buffering indicator.
+- Cached half-speed playback was tested with a mouse hold; releasing outside the button restored normal playback and recorded the section correctly.
+- The marked interval exported and downloaded successfully as an MP4 with audio.
+- Silent portrait integration passed: no AI on upload; two explicitly requested half-second AI windows; 60 frames per window at 120 fps; distinct decoded frames on moving content; overlapping quarter-/half-speed sections exported at the expected 2.2-second duration; HTTP range seeking succeeded.
+- Desktop screenshots were inspected and mobile-width layout checked for overflow. Physical touch hardware remains untested.
+- Half-second windows at 640×360 took approximately 1.5 seconds each including extraction, RIFE process startup, inference, and encoding. There is a visible first-window buffer and potential further buffering when the GPU pipeline cannot keep up.
+
+Current application address: **http://127.0.0.1:8766**. Start/stop launchers use this port. No cloud inference is used.
+
+## Earlier full-video prototype (historical results)
+
 Environment: Windows, NVIDIA GeForce RTX 3060 Ti (8 GB), Python 3.15, FFmpeg, official RIFE ncnn Vulkan Windows release 20221029, RIFE v4.6 model.
 
 Passed:

@@ -1,115 +1,17 @@
 """Local-only RIFE video preparation and edited MP4 export. Python stdlib only."""
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-from pathlib import Path
 from urllib.parse import urlparse
 import argparse
 import json
 import math
-import os
 import shutil
-import subprocess
 import threading
-import time
 import uuid
 
-ROOT = Path(__file__).resolve().parent
-DATA = ROOT / 'data'
-ENGINE = ROOT / 'tools/rife-ncnn-vulkan-20221029-windows'
-JOBS = {}
-LOCK = threading.Lock()
-GPU = threading.Semaphore(1)
-MAX_BYTES = 1024 ** 3
-MAX_SECONDS = 120
-NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-
-
-def update(job, **values):
-    with LOCK:
-        job.update(values)
-
-
-def run(args, log):
-    with open(log, 'ab') as output:
-        result = subprocess.run([str(x) for x in args], stdout=output, stderr=output,
-                                creationflags=NO_WINDOW)
-    if result.returncode:
-        tail = Path(log).read_text(errors='replace')[-1800:]
-        raise RuntimeError(f'{Path(str(args[0])).name} failed: {tail}')
-
-
-def probe(path):
-    result = subprocess.run(['ffprobe', '-v', 'error', '-show_format', '-show_streams',
-                             '-of', 'json', str(path)], capture_output=True, text=True,
-                            creationflags=NO_WINDOW, check=True)
-    return json.loads(result.stdout)
-
-
-def prepare(job):
-    folder = DATA / job['id']
-    log = folder / 'processing.log'
-    frame_in, frame_out = folder / 'frames', folder / 'interpolated'
-    try:
-        update(job, phase='queued', message='Waiting for the GPU…', progress=2)
-        with GPU:
-            update(job, phase='decoding', message='Reading video and preparing frames…', progress=4)
-            info = probe(folder / 'source')
-            stream = next((s for s in info['streams'] if s['codec_type'] == 'video'), None)
-            if not stream:
-                raise ValueError('No video stream found. Choose a playable video.')
-            duration = float(stream.get('duration') or info['format'].get('duration') or 0)
-            if not math.isfinite(duration) or duration <= 0 or duration > MAX_SECONDS:
-                raise ValueError(f'Please choose a video between 0 and {MAX_SECONDS} seconds long.')
-            audio = any(s['codec_type'] == 'audio' for s in info['streams'])
-            update(job, duration=duration, audio=audio)
-            frame_in.mkdir()
-            frame_out.mkdir()
-            # Fixed 30 fps source / 120 fps prepared stream: smooth 30 fps at quarter speed.
-            scale = "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=30"
-            run(['ffmpeg', '-hide_banner', '-y', '-i', folder / 'source', '-map', '0:v:0',
-                 '-t', str(duration), '-an', '-vf', scale, '-q:v', '2', frame_in / '%08d.jpg'], log)
-            count = len(list(frame_in.glob('*.jpg')))
-            if count < 2:
-                raise ValueError('This video is too short. At least two frames are required.')
-            target = count * 4
-            update(job, phase='interpolating', message='Generating AI frames with RIFE…', progress=10,
-                   inputFrames=count, outputFrames=target)
-            started = time.monotonic()
-            with open(log, 'ab') as output:
-                process = subprocess.Popen([str(ENGINE / 'rife-ncnn-vulkan.exe'), '-i', str(frame_in),
-                    '-o', str(frame_out), '-m', str(ENGINE / 'rife-v4.6'), '-n', str(target),
-                    '-j', '2:2:2', '-f', '%08d.jpg'], stdout=output, stderr=output,
-                    creationflags=NO_WINDOW)
-                while process.poll() is None:
-                    done = len(list(frame_out.glob('*.jpg')))
-                    elapsed = time.monotonic() - started
-                    update(job, progress=round(10 + 75 * done / target, 1), generatedFrames=done,
-                           inferenceFps=round(done / max(elapsed, .01), 1))
-                    time.sleep(.75)
-                if process.returncode:
-                    raise RuntimeError('RIFE could not process this video. See processing.log in its data folder.')
-            inference_seconds = time.monotonic() - started
-            files = sorted(frame_out.glob('*.jpg'))
-            if len(files) != target:
-                raise RuntimeError(f'RIFE produced {len(files)} of {target} expected frames.')
-            update(job, phase='encoding', message='Encoding your AI-ready preview…', progress=88,
-                   inferenceSeconds=round(inference_seconds, 2), inferenceFps=round(target / inference_seconds, 1))
-            args = ['ffmpeg', '-hide_banner', '-y', '-framerate', '120', '-start_number',
-                    str(int(files[0].stem)), '-i', frame_out / '%08d.jpg', '-i', folder / 'source',
-                    '-map', '0:v:0', '-map', '1:a:0?', '-t', str(duration), '-c:v', 'libx264',
-                    '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-                    '-b:a', '192k', '-movflags', '+faststart', folder / 'preview.mp4']
-            run(args, log)
-            preview_info = probe(folder / 'preview.mp4')
-            ready_duration = float(next(s for s in preview_info['streams'] if s['codec_type'] == 'video')['duration'])
-            update(job, phase='ready', message='AI frames ready. Hold the corner to slow down.',
-                   progress=100, duration=min(duration, ready_duration), preview=f'/media/{job["id"]}/preview.mp4')
-    except Exception as error:
-        update(job, phase='error', message=str(error), progress=0)
-    finally:
-        # These are only generated intermediates inside this job, never user files.
-        for path in (frame_in, frame_out):
-            if path.is_dir() and path.parent.resolve() == folder.resolve():
-                shutil.rmtree(path)
+import pipeline
+ROOT, DATA, ENGINE = pipeline.ROOT, pipeline.DATA, pipeline.ENGINE
+JOBS, LOCK, GPU = pipeline.JOBS, pipeline.LOCK, pipeline.GPU
+update, probe, prepare = pipeline.update, pipeline.probe, pipeline.prepare
 
 
 def sections(holds, duration):
@@ -140,39 +42,7 @@ def sections(holds, duration):
     return output
 
 
-def export_video(job, segments):
-    folder = DATA / job['id']
-    work = folder / f'export-{uuid.uuid4().hex}'
-    work.mkdir()
-    log = folder / 'export.log'
-    try:
-        with GPU:
-            for index, (start, end, speed) in enumerate(segments):
-                duration = (end - start) / speed
-                filters = f'[0:v]setpts=(PTS-STARTPTS)/{speed},fps=30,setsar=1[v]'
-                if job['audio']:
-                    tempo = 'atempo=0.5,atempo=0.5' if speed == .25 else f'atempo={speed}'
-                    filters += f';[0:a]asetpts=PTS-STARTPTS,{tempo},apad,atrim=duration={duration}[a]'
-                args = ['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-t', str(end - start),
-                        '-i', folder / 'preview.mp4', '-filter_complex', filters, '-map', '[v]']
-                if job['audio']:
-                    args += ['-map', '[a]', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000']
-                args += ['-t', str(duration), '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
-                         '-pix_fmt', 'yuv420p', '-video_track_timescale', '15360', work / f'{index:03}.mp4']
-                run(args, log)
-                update(job, exportProgress=round((index + 1) / len(segments) * 95))
-            listing = work / 'concat.txt'
-            listing.write_text('\n'.join(f"file '{i:03}.mp4'" for i in range(len(segments))), encoding='utf-8')
-            result_name = f'moment-{uuid.uuid4().hex[:8]}.mp4'
-            run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', listing,
-                 '-c', 'copy', '-movflags', '+faststart', folder / result_name], log)
-            update(job, exportState='ready', exportProgress=100,
-                   download=f'/media/{job["id"]}/{result_name}')
-    except Exception as error:
-        update(job, exportState='error', exportMessage=str(error))
-    finally:
-        if work.parent.resolve() == folder.resolve():
-            shutil.rmtree(work)
+export_video = pipeline.export_video
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -199,27 +69,33 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if path == '/api/health':
-            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'maxSeconds': MAX_SECONDS})
+            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 4, 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
         if path.startswith('/api/jobs/'):
             with LOCK:
-                job = dict(JOBS.get(path.split('/')[-1], {}))
+                job = json.loads(json.dumps(JOBS.get(path.split('/')[-1], {})))
             return self.json(job or {'message': 'Job not found'}, 200 if job else 404)
+        if path.startswith('/api/chunks/'):
+            parts = path.strip('/').split('/')
+            with LOCK:
+                job = JOBS.get(parts[2]) if len(parts) == 4 else None
+                chunk = dict(job.get('chunks', {}).get(parts[3], {})) if job else {}
+            return self.json(chunk or {'message': 'Frame window not found'}, 200 if chunk else 404)
         if path.startswith('/media/'):
             parts = path.strip('/').split('/')
-            if len(parts) != 3 or parts[1] not in JOBS or not (parts[2] == 'preview.mp4' or
-                    (parts[2].startswith('moment-') and parts[2].endswith('.mp4') and '/' not in parts[2])):
+            if len(parts) != 3 or parts[1] not in JOBS or not (parts[2] in ('source', 'preview.mp4') or
+                    (parts[2].startswith(('moment-', 'chunk-')) and parts[2].endswith('.mp4') and '/' not in parts[2])):
                 return self.send_error(404)
             media = DATA / parts[1] / parts[2]
             if not media.is_file():
                 return self.send_error(404)
             return self.media(media)
-        if path not in ('/', '/index.html', '/style.css', '/app.js'):
+        if path not in ('/', '/index.html', '/style.css', '/app.js', '/live.js'):
             return self.send_error(404)
         super().do_GET()
 
     def do_HEAD(self):
         # Static/media GET handles Range; no arbitrary filesystem paths via HEAD.
-        if urlparse(self.path).path not in ('/', '/index.html', '/style.css', '/app.js'):
+        if urlparse(self.path).path not in ('/', '/index.html', '/style.css', '/app.js', '/live.js'):
             return self.send_error(404)
         super().do_HEAD()
 
@@ -247,7 +123,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 return
         self.send_response(206 if partial else 200)
-        self.send_header('Content-Type', 'video/mp4')
+        mime = JOBS.get(path.parent.name, {}).get('sourceMime', 'application/octet-stream') if path.name == 'source' else 'video/mp4'
+        self.send_header('Content-Type', mime)
         self.send_header('Accept-Ranges', 'bytes')
         self.send_header('Content-Length', str(end - start + 1))
         if partial:
@@ -279,15 +156,15 @@ class Handler(SimpleHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             if path == '/api/stop':
                 with LOCK:
-                    busy = any(j['phase'] not in ('ready', 'error') or j.get('exportState') == 'rendering' for j in JOBS.values())
+                    busy = any(j['phase'] not in ('ready', 'error') or j.get('exportState') == 'rendering' or any(c['phase'] in ('queued', 'decoding', 'interpolating', 'encoding') for c in j.get('chunks', {}).values()) for j in JOBS.values())
                 if busy:
                     return self.json({'message': 'Wait until video processing and export finish before stopping.'}, 409)
                 self.json({'message': 'Moment stopped. Your saved files remain in the data folder.'})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
             if path == '/api/upload':
-                if length <= 0 or length > MAX_BYTES:
-                    return self.json({'message': 'Choose a video smaller than 1 GB.'}, 413)
+                if length <= 0:
+                    return self.json({'message': 'Choose a non-empty video file.'}, 400)
                 with LOCK:
                     busy = any(j['phase'] not in ('ready', 'error') for j in JOBS.values())
                 if busy:
@@ -303,11 +180,27 @@ class Handler(SimpleHTTPRequestHandler):
                             raise ValueError('Upload interrupted. Please try again.')
                         output.write(chunk)
                         remaining -= len(chunk)
-                job = {'id': identity, 'phase': 'queued', 'progress': 0, 'message': 'Video received.'}
+                job = {'id': identity, 'phase': 'queued', 'progress': None, 'message': 'Video received.', 'aiInvocations': 0,
+                       'directPlayback': self.headers.get('X-Moment-Direct') == '1'}
                 with LOCK:
                     JOBS[identity] = job
                 threading.Thread(target=prepare, args=(job,), daemon=True).start()
                 return self.json({'id': identity}, 202)
+            if path.startswith(('/api/live/', '/api/chunks/')):
+                if not 0 < length <= 4096:
+                    raise ValueError('Invalid hold request.')
+                with LOCK:
+                    job = JOBS.get(path.split('/')[-1])
+                if not job or job['phase'] != 'ready':
+                    return self.json({'message': 'Normal playback is still being prepared.'}, 409)
+                body = json.loads(self.rfile.read(length))
+                if path.startswith('/api/live/'):
+                    result = pipeline.live(job, body.get('session'), body.get('active') is True)
+                else:
+                    if job.get('exportState') == 'rendering':
+                        return self.json({'message': 'Wait until saving finishes.'}, 409)
+                    result = pipeline.request_chunk(job, body.get('index'), body.get('session'))
+                return self.json(result)
             if path.startswith('/api/export/'):
                 if length <= 0 or length > 65536:
                     return self.json({'message': 'Invalid export request.'}, 400)
@@ -317,12 +210,22 @@ class Handler(SimpleHTTPRequestHandler):
                         return self.json({'message': 'Wait until AI preparation finishes.'}, 409)
                     if job.get('exportState') == 'rendering':
                         return self.json({'message': 'An export is already running.'}, 409)
-                holds = json.loads(self.rfile.read(length)).get('holds')
+                body = json.loads(self.rfile.read(length))
+                holds = body.get('holds')
+                scope = body.get('scope', 'full')
+                if scope not in ('full', 'section'):
+                    raise ValueError('Invalid export scope.')
                 if not holds:
                     raise ValueError('Hold the corner to mark a section before saving.')
+                if scope == 'section' and (not isinstance(holds, list) or len(holds) != 1):
+                    raise ValueError('Select exactly one slow-motion section.')
                 segments = sections(holds, job['duration'])
-                update(job, exportState='rendering', exportProgress=0, download=None)
-                threading.Thread(target=export_video, args=(job, segments), daemon=True).start()
+                if scope == 'section':
+                    segments = [segment for segment in segments if segment[2] != 1]
+                    if not segments:
+                        raise ValueError('The selected section is shorter than one output frame.')
+                update(job, exportState='rendering', exportProgress=0, download=None, exportScope=scope)
+                threading.Thread(target=export_video, args=(job, segments, scope), daemon=True).start()
                 return self.json({'message': 'Export started.'}, 202)
             self.json({'message': 'Not found'}, 404)
         except (ValueError, KeyError, TypeError) as error:
@@ -331,13 +234,14 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--port', type=int, default=8766)
     args = parser.parse_args()
     if not (ENGINE / 'rife-ncnn-vulkan.exe').exists():
         raise SystemExit('RIFE is missing. Run setup.ps1 first.')
     if not all(shutil.which(command) for command in ('ffmpeg', 'ffprobe')):
         raise SystemExit('FFmpeg and ffprobe must be installed and available on PATH.')
     DATA.mkdir(exist_ok=True)
+    pipeline.restore_jobs()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     print(f'Moment is running at http://127.0.0.1:{args.port}', flush=True)
     try:

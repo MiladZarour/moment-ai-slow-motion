@@ -14,7 +14,9 @@
       <div class="studio-bar"><span><span class="small-dot"></span> YOUR CANVAS</span><span id="fileName">No video selected</span></div>
       <div class="stage" id="stage">
         <video id="video" playsinline preload="metadata"></video>
-        <div class="empty" id="empty"><div class="upload-icon">↥</div><h2>Every video has a moment.</h2><p>Drop yours here to find it.</p><button class="primary" id="choose">Choose a video <span>↗</span></button><small>Up to 2 minutes · 1 GB · processed on your PC</small></div>
+        <video id="aiVideo" class="ai-video" playsinline preload="auto"></video>
+        <div id="bufferTag" class="buffer-tag" hidden>Generating AI frames on your GPU…</div>
+        <div class="empty" id="empty"><div class="upload-icon">↥</div><h2>Every video has a moment.</h2><p>Drop yours here to find it.</p><button class="primary" id="choose">Choose a video <span>↗</span></button><small>No fixed duration limit · processed on your PC</small></div>
         <div class="slow-tag" id="slowTag">● &nbsp; SLOW MOTION <span id="liveSpeed">0.25×</span></div>
         <button id="hold" class="hold" disabled aria-label="Hold for slow motion"><span class="hold-symbol">◔</span><span>HOLD TO SLOW</span><small>Release to return to 1×</small></button>
         <div class="drop-overlay">Drop your video here</div>
@@ -22,12 +24,14 @@
       <div class="transport"><button id="play" class="play" disabled aria-label="Play">▶</button><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="100" value="0" step="0.01" aria-label="Video position" disabled><span id="duration">0:00</span><button id="mute" class="icon-button" disabled aria-label="Mute">♪</button><button id="full" class="icon-button" disabled aria-label="Fullscreen">⛶</button></div>
       <div class="settings"><div class="speed-setting"><span>Slow it down to</span><div class="speeds" aria-label="Slow motion speed"><button data-speed="0.25" aria-pressed="true" class="selected">¼×</button><button data-speed="0.5" aria-pressed="false">½×</button></div></div><button id="replace" class="text-button">↥ &nbsp; Change video</button></div>
       <div class="ai-panel"><div class="ai-heading"><span id="aiLabel">AI engine · checking connection</span><span id="aiDetail">Local GPU processing</span></div><progress id="progress" max="100" value="0" aria-label="AI frame preparation"></progress><p id="aiMessage">Open this app through Start Moment.cmd to enable AI slow motion.</p></div>
-      <div class="edit-panel"><div class="edit-heading"><div><strong>Your slow-motion sections</strong><p id="editHint">Hold the corner during playback to mark a section.</p></div><button id="clear" class="text-button" disabled>Clear sections</button></div><div id="sections" class="sections"></div><div class="export-row"><span id="exportInfo">Save keeps the full video, with your marked sections slowed down.</span><button id="save" class="primary" disabled>Save MP4 ↓</button><a id="download" class="download" hidden download>Download MP4 ↓</a></div></div>
+      <div class="edit-panel"><div class="edit-heading"><div><strong>Your slow-motion sections</strong><p id="editHint">Hold the corner during playback to mark a section.</p></div><button id="clear" class="text-button" disabled>Clear sections</button></div><div id="sections" class="sections"></div><div class="export-row"><span id="exportInfo">Right-click a section to save just that clip, or save the full video.</span><button id="save" class="primary" disabled>Save MP4 ↓</button><a id="download" class="download" hidden download>Download MP4 ↓</a></div></div>
     </section>
     <div class="footnotes"><p><span>✦</span> Press & hold the corner button, or hold <kbd>S</kbd>, for slow motion.</p><p>Made for the moments between frames.</p></div>
-    <p class="status" id="status" role="status">Your video stays on this PC. AI preview is prepared at up to 720p.</p>
+    <p class="status" id="status" role="status">Your video stays on this PC. AI generation starts when you hold.</p>
     <input id="file" type="file" accept="video/*" hidden>
   </main>
+  <div id="sectionMenu" class="section-menu" role="menu" aria-label="Slow-motion section actions" hidden><button id="saveSection" role="menuitem">Save this section as MP4 ?</button><button id="removeSection" role="menuitem">Remove section</button></div>
+  <script src="live.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
