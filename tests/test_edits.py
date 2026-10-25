@@ -22,6 +22,19 @@ class EditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sections([hold], 3)
 
+    def test_native_29fps_section_grid(self):
+        result = sections([{'start': 15/29, 'end': 45/29, 'speed': .25}], 3, '29')
+        self.assertAlmostEqual(result[1][0], 15/29)
+        self.assertAlmostEqual(result[1][1], 45/29)
+
+    def test_native_fractional_frame_rate(self):
+        import pipeline
+        job = {}
+        pipeline.ensure_timing(job, {'streams': [{'codec_type': 'video', 'avg_frame_rate': '24000/1001'}], 'format': {}})
+        self.assertEqual(job['sourceFps'], '24000/1001')
+        self.assertEqual(job['outputFps'], '96000/1001')
+        self.assertAlmostEqual(job['chunkSeconds'], 15*1001/24000)
+
 
 if __name__ == '__main__':
     unittest.main()

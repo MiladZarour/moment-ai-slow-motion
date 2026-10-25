@@ -10,9 +10,9 @@ Double-click **Start Moment.cmd**, then use the page at **http://127.0.0.1:8766*
 
 The app uses **RIFE v4.6** through **rife-ncnn-vulkan**. The browser checks whether it can decode the selected file. If it can, the app uses the original file directly: no full-video conversion or downscaling. Only incompatible formats get a 30 fps playback copy, with measured conversion progress. AI windows and exported edits fit within 1280?720. **No AI interpolation runs on upload or during normal playback.**
 
-Each hold opens a GPU session at the current playhead. RIFE processes up to four half-second windows per model load and publishes completed windows while continuing to generate the rest. The browser appends them to one continuous MediaSource stream, rather than reloading a video at every boundary. A short initial buffer helps the GPU stay ahead. The stream's buffer is bounded and old frames are discarded during long holds. Releasing cancels unfinished work; completed windows remain cached.
+Each hold opens a GPU session at the current playhead. RIFE processes up to six frame-aligned windows per model load and publishes completed windows while continuing to generate the rest. The browser appends them to one continuous MediaSource stream, rather than reloading a video at every boundary. A short initial buffer helps the GPU stay ahead. The stream's buffer is bounded and old frames are discarded during long holds. Releasing cancels unfinished work; completed windows remain cached.
 
-Live AI preview fits within **960?540** for smoother playback. **Saving renders the selected slow-motion intervals again at up to 1280?720**; normal portions use the original video. Saved clips are H.264 MP4 at 30 fps, with optional pitch-preserving stretched AAC audio. No full-video AI generation runs on upload.
+Live AI preview fits within **960?540** for smoother playback. **Saving renders the selected slow-motion intervals again at up to 1280?720**; the source frame rate (up to 30 fps) is preserved. Normal portions use the original video. Saved clips are H.264 MP4 at the preserved source frame rate, with optional pitch-preserving stretched AAC audio. No full-video AI generation runs on upload.
 
 The normal source video supplies the live audio clock while the silent AI stream supplies the picture. Playback and audio pause together if the GPU buffer runs dry. Tested in Chromium/Edge-compatible MediaSource playback. Current Chrome or Edge is required for the smooth AI player.
 
@@ -25,3 +25,5 @@ Requirements: Windows, Python 3, FFmpeg/ffprobe on PATH, and a working Vulkan-ca
 Engine source and bundled license: https://github.com/nihui/rife-ncnn-vulkan (MIT). Windows binary/model package: release `20221029`, downloaded from the official project's GitHub releases. This is an independent implementation, not Samsung's model.
 
 Validation: `python -m unittest discover -s tests` covers section timing, overlap resolution, and sub-frame boundary handling. GPU pipeline and browser tests use generated video fixtures; see `VALIDATION.md` for recorded results.
+
+Frame continuity: source frames are sampled on one global frame grid with decode overlap. Window boundaries use 15 source frames, rather than assuming every video is 30 fps. RIFE receives exactly four outputs per input frame; context/end padding is trimmed. Each saved slow-motion section is encoded continuously. The player targets roughly three source seconds of lookahead while held.

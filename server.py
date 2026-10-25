@@ -14,11 +14,12 @@ JOBS, LOCK, GPU = pipeline.JOBS, pipeline.LOCK, pipeline.GPU
 update, probe, prepare = pipeline.update, pipeline.probe, pipeline.prepare
 
 
-def sections(holds, duration):
+def sections(holds, duration, fps=30):
     """Resolve overlapping takes with the most recently recorded hold winning."""
     # Snap edits to output frames. Near-adjacent pointer/keyboard holds can otherwise
     # leave sub-frame gaps that contain no decodable frame during segment export.
-    duration = round(duration * 30) / 30
+    fps = float(pipeline.Fraction(fps))
+    duration = round(duration * fps) / fps
     cleaned = []
     if not isinstance(holds, list) or len(holds) > 50:
         raise ValueError('A maximum of 50 slow-motion sections is supported per export.')
@@ -26,9 +27,9 @@ def sections(holds, duration):
         start, end, speed = (float(hold[k]) for k in ('start', 'end', 'speed'))
         if not all(math.isfinite(v) for v in (start, end, speed)) or speed not in (.25, .5):
             raise ValueError('Invalid slow-motion section.')
-        start = max(0, min(duration, round(start * 30) / 30))
-        end = max(0, min(duration, round(end * 30) / 30))
-        if end - start >= 1 / 30 - 1e-8:
+        start = max(0, min(duration, round(start * fps) / fps))
+        end = max(0, min(duration, round(end * fps) / fps))
+        if end - start >= 1 / fps - 1e-8:
             cleaned.append((start, end, speed))
     boundaries = sorted({0., duration, *(x for s, e, _ in cleaned for x in (s, e))})
     output = []
@@ -69,8 +70,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if path == '/api/health':
-            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 5, 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
+            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 6, 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
         if path.startswith('/api/jobs/'):
+            candidate = JOBS.get(path.split('/')[-1])
+            if candidate and candidate['phase'] == 'ready':
+                pipeline.ensure_timing(candidate)
             with LOCK:
                 job = json.loads(json.dumps(JOBS.get(path.split('/')[-1], {})))
             return self.json(job or {'message': 'Job not found'}, 200 if job else 404)
@@ -219,7 +223,8 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError('Hold the corner to mark a section before saving.')
                 if scope == 'section' and (not isinstance(holds, list) or len(holds) != 1):
                     raise ValueError('Select exactly one slow-motion section.')
-                segments = sections(holds, job['duration'])
+                pipeline.ensure_timing(job)
+                segments = sections(holds, job['duration'], job['sourceFps'])
                 if scope == 'section':
                     segments = [segment for segment in segments if segment[2] != 1]
                     if not segments:

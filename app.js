@@ -15,6 +15,7 @@ const livePlayer = new LiveSlowPlayer(video, $('aiVideo'), (path, body) => api(p
     if (state === 'playing') { $('play').textContent = 'Ⅱ'; $('play').setAttribute('aria-label', 'Pause'); }
   },
   position(position) { showPosition(position); },
+  buffer(seconds) { if (holding) $('aiDetail').textContent = `${Math.max(0, seconds).toFixed(1)}s of video prepared ahead`; },
   end() { stopSlow(); },
   error(error) { stopSlow(); $('status').textContent = error.message; }
 });
@@ -152,7 +153,7 @@ async function load(file) {
   if (!file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v|ogv|mkv)$/i.test(file.name)) { $('status').textContent = 'Please choose a video file.'; return; }
   try {
     const health = await api('/api/health');
-    if (health.apiVersion !== 5) { $('status').textContent = 'An older engine is running. Open Start Moment.cmd to update it before uploading.'; return; }
+    if (health.apiVersion !== 6) { $('status').textContent = 'An older engine is running. Open Start Moment.cmd to update it before uploading.'; return; }
   } catch { $('status').textContent = 'The local engine is offline. Open Start Moment.cmd, then reload this page.'; return; }
   if (preparing || exporting) return;
   stopSlow(); video.pause(); clearTimeout(pollTimer);
@@ -190,7 +191,7 @@ async function poll(version) {
     $('aiDetail').textContent = job.phase === 'ready' ? (job.directPlayback ? 'Original video · no conversion' : 'GPU starts on hold') : job.progress == null ? 'Checking…' : `${Math.round(job.progress)}%`;
     if (job.phase === 'ready' && !aiReady) {
       preparing = false; aiReady = true;
-      livePlayer.configure(jobId, job.duration);
+      livePlayer.configure(jobId, job.duration, job.chunkSeconds);
       const position = video.currentTime || 0, paused = video.paused;
       if (!job.directPlayback || !sourceUrl) {
         video.pause(); video.src = job.preview;
@@ -290,7 +291,7 @@ $('full').addEventListener('click', async () => { try { if (document.fullscreenE
 async function init() {
   try {
     const health = await api('/api/health'); online = health.engine;
-    if (health.apiVersion !== 5) {
+    if (health.apiVersion !== 6) {
       online = false; $('aiLabel').textContent = 'Engine update needed';
       $('aiMessage').textContent = 'Open Start Moment.cmd to load the smooth playback engine, then refresh this page.';
       availability(); return;

@@ -4,6 +4,7 @@ class LiveSlowPlayer {
     this.source = source; this.overlay = overlay; this.request = request; this.callbacks = callbacks;
     this.session = null; this.job = null; this.duration = 0; this.position = 0; this.base = 0;
     this.pending = new Map(); this.started = false; this.ending = false; this.speed = .25;
+    this.windowSeconds = .5;
     this.metrics = { stalls: 0, stallSeconds: 0, appended: 0 };
     overlay.addEventListener('timeupdate', () => this.tick());
     overlay.addEventListener('waiting', () => {
@@ -25,11 +26,12 @@ class LiveSlowPlayer {
     });
     overlay.addEventListener('ended', () => { if (this.session && this.ending) callbacks.end(); });
   }
-  configure(job, duration) { this.stop(); this.job = job; this.duration = duration; }
+  configure(job, duration, windowSeconds = .5) { this.stop(); this.job = job; this.duration = duration; this.windowSeconds = windowSeconds; }
   currentTime() { return this.session && this.started ? Math.min(this.duration, this.base + this.overlay.currentTime) : this.position; }
   tick() {
     if (!this.session || !this.started) return;
     this.position = this.currentTime(); this.callbacks.position(this.position);
+    this.callbacks.buffer?.(this.bufferedAhead());
     if (!this.overlay.paused && this.overlay.readyState >= 3) this.syncAudio(false);
   }
   syncAudio(force) {
@@ -44,7 +46,8 @@ class LiveSlowPlayer {
       this.callbacks.error(new Error('Smooth AI playback requires a current Chrome or Edge browser.')); return;
     }
     this.source.pause(); this.position = position; this.speed = speed;
-    this.base = Math.floor(position / .5) * .5; this.started = false; this.ending = false;
+    const windowSeconds = this.windowSeconds;
+    this.base = Math.floor((position + 1e-8) / windowSeconds) * windowSeconds; this.started = false; this.ending = false;
     this.metrics = { stalls: 0, stallSeconds: 0, appended: 0 }; this.waitStarted = null;
     this.pending = new Map();
     const session = crypto.randomUUID(), job = this.job;
@@ -64,9 +67,9 @@ class LiveSlowPlayer {
       buffer.mode = 'sequence'; this.buffer = buffer;
       // One initial second of source time gives the GPU room to stay ahead.
       const minimum = Math.min(this.duration - position, 1);
-      let index = Math.floor(position / .5);
-      while (session === this.session && index * .5 < this.duration - .001) {
-        while (session === this.session && this.started && this.bufferedAhead() > 2) await this.delay(60);
+      let index = Math.floor((position + 1e-8) / windowSeconds);
+      while (session === this.session && index * windowSeconds < this.duration - .001) {
+        while (session === this.session && this.started && this.bufferedAhead() > 3) await this.delay(60);
         if (session !== this.session) return;
         const chunk = await this.ensure(index, session);
         if (session !== this.session) return;
@@ -85,7 +88,7 @@ class LiveSlowPlayer {
           this.syncAudio(true);
           this.callbacks.state('playing', 'Continuous AI playback · 540p smooth preview · saved clips render up to 720p');
         }
-        if (index * .5 >= this.duration - .001) {
+        if (index * windowSeconds >= this.duration - .001) {
           this.ending = true;
           if (media.readyState === 'open' && !buffer.updating) media.endOfStream();
           if (!this.started) {

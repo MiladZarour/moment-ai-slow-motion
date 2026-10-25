@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import uuid
+from fractions import Fraction
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / 'data'
@@ -21,7 +22,44 @@ GEOMETRY = "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=d
 SCALE = GEOMETRY + ',fps=30'
 PREVIEW_GEOMETRY = "scale=w='min(960,iw)':h='min(540,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
 PREVIEW_SCALE = PREVIEW_GEOMETRY + ',fps=30'
-BATCH_WINDOWS = 4
+BATCH_WINDOWS = 6
+WINDOW_FRAMES = 15
+
+
+def ensure_timing(job, info=None):
+    if 'sourceFps' in job:
+        return
+    info = info or probe(DATA / job['id'] / job.get('playbackFile', 'source'))
+    stream = next(s for s in info['streams'] if s['codec_type'] == 'video')
+    try:
+        fps = Fraction(stream.get('avg_frame_rate') or stream.get('r_frame_rate') or '30')
+        if fps <= 0:
+            fps = Fraction(30)
+    except (ValueError, ZeroDivisionError):
+        fps = Fraction(30)
+    fps = min(fps, Fraction(30)).limit_denominator(1001)
+    output = fps * 4
+    update(job, sourceFps=str(fps), outputFps=str(output),
+           chunkSeconds=float(WINDOW_FRAMES / fps),
+           timelineOrigin=float(info.get('format', {}).get('start_time') or 0))
+
+
+def extract_frames(job, start_frame, count, destination, geometry, log):
+    """Sample one global CFR grid, with decode overlap so seeks cannot shift it."""
+    fps = Fraction(job['sourceFps'])
+    start = float(start_frame / fps)
+    seek = max(0, float((start_frame - 2) / fps))
+    filters = f"setpts=PTS-({job.get('timelineOrigin', 0)})/TB,{geometry},fps=fps={fps}:start_time={start:.12f}:round=near"
+    run(['ffmpeg', '-hide_banner', '-y', '-copyts', '-ss', f'{seek:.12f}',
+         '-i', DATA / job['id'] / job['playbackFile'], '-an', '-vf', filters,
+         '-frames:v', str(count), '-fps_mode', 'passthrough', '-q:v', '2', destination / '%08d.jpg'], log)
+    actual = len(list(destination.glob('*.jpg')))
+    if not actual:
+        raise ValueError('No frames found at this position.')
+    while actual < count:
+        shutil.copyfile(destination / f'{actual:08}.jpg', destination / f'{actual+1:08}.jpg')
+        actual += 1
+    return count
 
 
 def update(item, **values):
@@ -45,7 +83,7 @@ def probe(path):
 
 
 def remember(job):
-    keys = ('id', 'phase', 'progress', 'duration', 'audio', 'playbackFile', 'sourceMime', 'preview', 'directPlayback', 'message')
+    keys = ('id', 'phase', 'progress', 'duration', 'audio', 'playbackFile', 'sourceMime', 'preview', 'directPlayback', 'message', 'sourceFps', 'outputFps', 'chunkSeconds', 'timelineOrigin')
     manifest = DATA / job['id'] / 'job.json'
     temporary = manifest.with_suffix('.tmp')
     temporary.write_text(json.dumps({key: job[key] for key in keys if key in job}), encoding='utf-8')
@@ -80,6 +118,7 @@ def prepare(job):
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError('The video must have a valid, positive duration.')
         audio = any(s['codec_type'] == 'audio' for s in info['streams'])
+        ensure_timing(job, info)
         if job.get('directPlayback'):
             formats = info['format'].get('format_name', '')
             mime = 'video/webm' if 'webm' in formats else 'video/mp4' if 'mp4' in formats else 'video/x-matroska'
@@ -91,7 +130,7 @@ def prepare(job):
             return
         update(job, phase='converting', message='Converting an incompatible format for browser playback...', progress=0)
         args = ['ffmpeg', '-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', '-i', folder / 'source', '-t', str(duration),
-             '-map', '0:v:0', '-map', '0:a:0?', '-vf', SCALE, '-c:v', 'libx264',
+             '-map', '0:v:0', '-map', '0:a:0?', '-vf', GEOMETRY + ',fps=' + job['sourceFps'], '-c:v', 'libx264',
              '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', '-g', '15',
              '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', folder / 'preview.mp4']
         with (folder / 'processing.log').open('ab') as log:
@@ -135,7 +174,9 @@ def live(job, session, active):
 
 
 def request_chunk(job, index, session):
-    if type(index) is not int or not 0 <= index < math.ceil(job['duration'] / CHUNK_SECONDS):
+    ensure_timing(job)
+    window = job['chunkSeconds']
+    if type(index) is not int or not 0 <= index < math.ceil(job['duration'] / window):
         raise ValueError('Invalid frame window.')
     with LOCK:
         if not job['sessions'].get(session):
@@ -151,14 +192,14 @@ def request_chunk(job, index, session):
         batch = []
         for offset in range(BATCH_WINDOWS):
             cursor = index + offset
-            if cursor * CHUNK_SECONDS >= job['duration']:
+            if cursor * window >= job['duration']:
                 break
             previous = job['chunks'].get(str(cursor))
             if offset and previous and previous['phase'] == 'ready':
                 break
             chunk = {'index': cursor, 'token': token, 'session': session, 'phase': 'queued', 'progress': 0,
-                     'start': cursor * CHUNK_SECONDS,
-                     'end': min(job['duration'], (cursor + 1) * CHUNK_SECONDS)}
+                     'start': cursor * window,
+                     'end': min(job['duration'], (cursor + 1) * window)}
             job['chunks'][str(cursor)] = chunk
             batch.append(chunk)
         threading.Thread(target=generate_batch, args=(job, batch), daemon=True).start()
@@ -182,19 +223,16 @@ def generate_batch(job, batch):
             frame_in.mkdir(parents=True); frame_out.mkdir()
             for chunk in batch:
                 update(chunk, phase='decoding', progress=5)
-            length = batch[-1]['end'] - batch[0]['start']
             decode_start = time.monotonic()
-            run(['ffmpeg', '-hide_banner', '-y', '-ss', str(batch[0]['start']), '-i', folder / job['playbackFile'],
-                 '-t', str(length + 1 / 30), '-an', '-vf', PREVIEW_SCALE, '-q:v', '2', frame_in / '%08d.jpg'], log)
-            count = len(list(frame_in.glob('*.jpg')))
-            if count == 0:
-                raise ValueError('No frames found at this position.')
-            expected = math.ceil(length * 30 - 1e-6) + 1
-            while count < expected:
-                shutil.copyfile(frame_in / f'{count:08}.jpg', frame_in / f'{count+1:08}.jpg'); count += 1
+            fps = Fraction(job['sourceFps'])
+            output_fps = fps * 4
+            count = extract_frames(job, batch[0]['index'] * WINDOW_FRAMES,
+                                   len(batch) * WINDOW_FRAMES + 1, frame_in, PREVIEW_GEOMETRY, log)
             if cancelled.is_set():
                 raise InterruptedError()
-            target = (count - 1) * 4 + 1
+            # This CLI maps output i to input i * input_count / output_count.
+            # Exactly 4*count preserves quarter-frame steps; endpoint padding is trimmed.
+            target = count * 4
             decode_seconds = time.monotonic() - decode_start
             with LOCK:
                 job['aiInvocations'] += 1
@@ -205,8 +243,8 @@ def generate_batch(job, batch):
                     '-o', str(frame_out), '-m', str(ENGINE / 'rife-v4.6'), '-n', str(target),
                     '-j', '2:2:1', '-f', '%08d.jpg'], stdout=output, stderr=output, creationflags=NO_WINDOW)
                 for chunk in batch:
-                    offset = round((chunk['start'] - batch[0]['start']) * 120)
-                    frames = max(1, round((chunk['end'] - chunk['start']) * 120))
+                    offset = (chunk['index'] - batch[0]['index']) * WINDOW_FRAMES * 4
+                    frames = max(1, round((chunk['end'] - chunk['start']) * float(output_fps)))
                     required = [frame_out / f'{n:08}.jpg' for n in range(offset + 1, offset + frames + 1)]
                     previous_sizes = None
                     while True:
@@ -220,11 +258,11 @@ def generate_batch(job, batch):
                             raise RuntimeError('RIFE could not finish the frame window. See ai.log.')
                     update(chunk, phase='encoding', progress=90)
                     name = f'chunk-{token}-{chunk["index"]}.mp4'
-                    run(['ffmpeg', '-hide_banner', '-y', '-framerate', '120', '-start_number', str(offset + 1),
+                    run(['ffmpeg', '-hide_banner', '-y', '-framerate', str(output_fps), '-start_number', str(offset + 1),
                         '-i', frame_out / '%08d.jpg', '-frames:v', str(frames), '-an',
                         '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
                         '-profile:v', 'baseline', '-level:v', '4.2', '-crf', '18', '-pix_fmt', 'yuv420p',
-                        '-g', '60', '-keyint_min', '60', '-sc_threshold', '0', '-video_track_timescale', '15360',
+                        '-g', '60', '-keyint_min', '60', '-sc_threshold', '0', '-video_track_timescale', str(output_fps.numerator * 128),
                         '-movflags', '+frag_keyframe+empty_moov+default_base_moof', folder / name], log)
                     if cancelled.is_set():
                         (folder / name).unlink(missing_ok=True)
@@ -263,20 +301,13 @@ def generate_chunk(job, chunk):
             frame_in.mkdir(parents=True)
             frame_out.mkdir()
             update(chunk, phase='decoding', progress=5)
-            # Include the next real frame to interpolate the last interval correctly.
-            run(['ffmpeg', '-hide_banner', '-y', '-ss', str(chunk['start']), '-i', folder / job['playbackFile'],
-                 '-t', str(chunk['end'] - chunk['start'] + 1 / 30), '-an', '-vf', SCALE,
-                 '-q:v', '2', frame_in / '%08d.jpg'], log)
-            count = len(list(frame_in.glob('*.jpg')))
-            expected = round((chunk['end'] - chunk['start']) * 30) + 1
-            if count < 1:
-                raise ValueError('No source frames found in this window.')
-            while count < expected:
-                shutil.copyfile(frame_in / f'{count:08}.jpg', frame_in / f'{count + 1:08}.jpg')
-                count += 1
+            fps = Fraction(job['sourceFps'])
+            output_fps = fps * 4
+            count = extract_frames(job, chunk['index'] * WINDOW_FRAMES,
+                                   WINDOW_FRAMES + 1, frame_in, GEOMETRY, log)
             if cancelled.is_set():
                 raise InterruptedError()
-            target = (count - 1) * 4 + 1
+            target = count * 4
             update(chunk, phase='interpolating', progress=10, inputFrames=count, outputFrames=target)
             with LOCK:
                 job['aiInvocations'] += 1
@@ -298,11 +329,11 @@ def generate_chunk(job, chunk):
                 raise RuntimeError('AI frame generation was incomplete.')
             update(chunk, phase='encoding', progress=90)
             name = f'chunk-{token}.mp4'
-            run(['ffmpeg', '-hide_banner', '-y', '-framerate', '120', '-start_number', str(int(files[0].stem)),
-                 '-i', frame_out / '%08d.jpg', '-ss', str(chunk['start']), '-i', folder / job['playbackFile'],
-                 '-map', '0:v:0', '-map', '1:a:0?', '-t', str(chunk['end'] - chunk['start']),
+            frames = max(1, round((chunk['end'] - chunk['start']) * float(output_fps)))
+            run(['ffmpeg', '-hide_banner', '-y', '-framerate', str(output_fps), '-start_number', str(int(files[0].stem)),
+                 '-i', frame_out / '%08d.jpg', '-an', '-frames:v', str(frames),
                  '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p',
-                 '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', folder / name], log)
+                 '-video_track_timescale', str(output_fps.numerator * 128), '-movflags', '+faststart', folder / name], log)
             if cancelled.is_set():
                 (folder / name).unlink(missing_ok=True)
                 raise InterruptedError()
@@ -323,12 +354,15 @@ def export_video(job, segments, scope='full'):
     work.mkdir()
     log = folder / 'export.log'
     try:
+        ensure_timing(job)
+        fps = Fraction(job['sourceFps'])
+        window = job['chunkSeconds']
         pieces = []
         # Smooth playback uses 540p previews; render requested slow sections at 720p
         # for saving. This work happens only after the user explicitly saves.
         hd_cache = job.setdefault('exportChunks', {})
         needed = sorted({index for start, end, speed in segments if speed != 1
-                         for index in range(int((start + 1e-7) / CHUNK_SECONDS), math.ceil((end - 1e-7) / CHUNK_SECONDS))})
+                         for index in range(int((start + 1e-7) / window), math.ceil((end - 1e-7) / window))})
         for index in needed:
             preview = job['chunks'].get(str(index))
             if not preview or preview['phase'] != 'ready':
@@ -343,27 +377,30 @@ def export_video(job, segments, scope='full'):
                 raise RuntimeError(hd.get('message', 'Could not render the saved section.'))
             hd_cache[str(index)] = hd
             update(job, exportProgress=round(40 * (needed.index(index) + 1) / len(needed)))
-        for start, end, speed in segments:
-            cursor = start
-            while cursor < end - 1e-7:
-                if speed == 1:
-                    pieces.append((folder / job['playbackFile'], cursor, end - cursor, speed))
-                    break
-                index = int((cursor + 1e-7) / CHUNK_SECONDS)
-                chunk = hd_cache.get(str(index))
-                if not chunk or chunk['phase'] != 'ready':
-                    raise ValueError('A marked section has no AI frames. Replay that section while holding before saving.')
-                stop = min(end, chunk['end'])
-                pieces.append((folder / chunk['url'].split('/')[-1], cursor - chunk['start'], stop - cursor, speed))
-                cursor = stop
-        for i, (source, start, length, speed) in enumerate(pieces):
-            run(['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-t', str(length), '-i', source,
-                 '-an', '-vf', f'{GEOMETRY},setpts=(PTS-STARTPTS)/{speed},fps=30', '-t', str(length / speed),
+        for i, (start, end, speed) in enumerate(segments):
+            length = end - start
+            if speed == 1:
+                input_args = ['-ss', str(start), '-i', folder / job['playbackFile']]
+                trim_start = 0
+            else:
+                first = int((start + 1e-7) / window)
+                last = math.ceil((end - 1e-7) / window)
+                # Decode all AI windows on one timeline and encode this entire slowed
+                # section once. No per-window fps reset or encoder restart in the edit.
+                ai_listing = work / f'ai-{i}.txt'
+                ai_listing.write_text('\n'.join(
+                    f"file '{(folder / hd_cache[str(index)]['url'].split('/')[-1]).as_posix()}'"
+                    for index in range(first, last)), encoding='utf-8')
+                input_args = ['-f', 'concat', '-safe', '0', '-i', ai_listing]
+                trim_start = start - first * window
+            filters = f'trim=start={trim_start}:end={trim_start+length},{GEOMETRY},setpts=(PTS-STARTPTS)/{speed},fps={fps}'
+            run(['ffmpeg', '-hide_banner', '-y', *input_args,
+                 '-an', '-vf', filters, '-frames:v', str(round(length / speed * float(fps))),
                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
-                 '-video_track_timescale', '15360', work / f'{i:04}.mp4'], log)
-            update(job, exportProgress=round(40 + (i + 1) / len(pieces) * 50))
+                 '-video_track_timescale', str(fps.numerator * 128), work / f'{i:04}.mp4'], log)
+            update(job, exportProgress=round(40 + (i + 1) / len(segments) * 50))
         listing = work / 'concat.txt'
-        listing.write_text('\n'.join(f"file '{i:04}.mp4'" for i in range(len(pieces))), encoding='utf-8')
+        listing.write_text('\n'.join(f"file '{i:04}.mp4'" for i in range(len(segments))), encoding='utf-8')
         name = f'moment-{"section-" if scope == "section" else ""}{uuid.uuid4().hex[:8]}.mp4'
         args = ['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', listing]
         if job['audio']:
