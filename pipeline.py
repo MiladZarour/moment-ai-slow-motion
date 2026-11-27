@@ -158,7 +158,7 @@ def prepare(job):
         update(job, phase='error', progress=0, message=str(error))
 
 
-def live(job, session, active):
+def live(job, session, active, factor=4):
     if not isinstance(session, str) or not 1 <= len(session) <= 80:
         raise ValueError('Invalid hold session.')
     with LOCK:
@@ -169,6 +169,22 @@ def live(job, session, active):
                 if chunk.get('session') == session and chunk['phase'] not in ('ready', 'error', 'cancelled'):
                     CANCEL[chunk['token']].set()
         elif session not in job['sessions']:
+            if factor not in (4, 8):
+                raise ValueError('Unsupported interpolation factor.')
+            ensure_timing(job)
+            current = job.get('interpolationFactor', 4)
+            caches = job.setdefault('chunkCaches', {})
+            caches.setdefault(str(current), job['chunks'])
+            if current != factor:
+                if any(job['sessions'].values()):
+                    raise ValueError('Release the other preview before changing speed.')
+                for chunk in job['chunks'].values():
+                    if chunk['phase'] not in ('ready', 'error', 'cancelled'):
+                        CANCEL[chunk['token']].set()
+                job['chunks'] = caches.setdefault(str(factor), {})
+            job['interpolationFactor'] = factor
+            job['outputFps'] = str(Fraction(job['sourceFps']) * factor)
+            job.setdefault('sessionFactors', {})[session] = factor
             job['sessions'][session] = True
         return {'active': job['sessions'][session]}
 
@@ -181,6 +197,9 @@ def request_chunk(job, index, session):
     with LOCK:
         if not job['sessions'].get(session):
             raise ValueError('This hold was released.')
+        factor = job.get('sessionFactors', {}).get(session, 4)
+        if factor != job.get('interpolationFactor', 4):
+            raise ValueError('The preview speed changed. Start the preview again.')
         key = str(index)
         previous = job['chunks'].get(key)
         if previous and (previous['phase'] == 'ready' or
@@ -197,7 +216,7 @@ def request_chunk(job, index, session):
             previous = job['chunks'].get(str(cursor))
             if offset and previous and previous['phase'] == 'ready':
                 break
-            chunk = {'index': cursor, 'token': token, 'session': session, 'phase': 'queued', 'progress': 0,
+            chunk = {'index': cursor, 'token': token, 'session': session, 'factor': factor, 'phase': 'queued', 'progress': 0,
                      'start': cursor * window,
                      'end': min(job['duration'], (cursor + 1) * window)}
             job['chunks'][str(cursor)] = chunk
@@ -225,14 +244,15 @@ def generate_batch(job, batch):
                 update(chunk, phase='decoding', progress=5)
             decode_start = time.monotonic()
             fps = Fraction(job['sourceFps'])
-            output_fps = fps * 4
+            factor = batch[0].get('factor', 4)
+            output_fps = fps * factor
             count = extract_frames(job, batch[0]['index'] * WINDOW_FRAMES,
                                    len(batch) * WINDOW_FRAMES + 1, frame_in, PREVIEW_GEOMETRY, log)
             if cancelled.is_set():
                 raise InterruptedError()
             # This CLI maps output i to input i * input_count / output_count.
-            # Exactly 4*count preserves quarter-frame steps; endpoint padding is trimmed.
-            target = count * 4
+            # Exact multiples preserve the sample grid; endpoint padding is trimmed.
+            target = count * factor
             decode_seconds = time.monotonic() - decode_start
             with LOCK:
                 job['aiInvocations'] += 1
@@ -243,7 +263,7 @@ def generate_batch(job, batch):
                     '-o', str(frame_out), '-m', str(ENGINE / 'rife-v4.6'), '-n', str(target),
                     '-j', '2:2:1', '-f', '%08d.jpg'], stdout=output, stderr=output, creationflags=NO_WINDOW)
                 for chunk in batch:
-                    offset = (chunk['index'] - batch[0]['index']) * WINDOW_FRAMES * 4
+                    offset = (chunk['index'] - batch[0]['index']) * WINDOW_FRAMES * factor
                     frames = max(1, round((chunk['end'] - chunk['start']) * float(output_fps)))
                     required = [frame_out / f'{n:08}.jpg' for n in range(offset + 1, offset + frames + 1)]
                     previous_sizes = None
@@ -302,12 +322,13 @@ def generate_chunk(job, chunk):
             frame_out.mkdir()
             update(chunk, phase='decoding', progress=5)
             fps = Fraction(job['sourceFps'])
-            output_fps = fps * 4
+            factor = chunk.get('factor', 4)
+            output_fps = fps * factor
             count = extract_frames(job, chunk['index'] * WINDOW_FRAMES,
                                    WINDOW_FRAMES + 1, frame_in, GEOMETRY, log)
             if cancelled.is_set():
                 raise InterruptedError()
-            target = count * 4
+            target = count * factor
             update(chunk, phase='interpolating', progress=10, inputFrames=count, outputFrames=target)
             with LOCK:
                 job['aiInvocations'] += 1
@@ -361,22 +382,24 @@ def export_video(job, segments, scope='full'):
         # Smooth playback uses 540p previews; render requested slow sections at 720p
         # for saving. This work happens only after the user explicitly saves.
         hd_cache = job.setdefault('exportChunks', {})
-        needed = sorted({index for start, end, speed in segments if speed != 1
+        needed = sorted({(8 if speed == .125 else 4, index) for start, end, speed in segments if speed != 1
                          for index in range(int((start + 1e-7) / window), math.ceil((end - 1e-7) / window))})
-        for index in needed:
-            preview = job['chunks'].get(str(index))
+        for factor, index in needed:
+            key = f'{factor}:{index}'
+            preview_cache = job.get('chunkCaches', {}).get(str(factor), job['chunks'] if job.get('interpolationFactor', 4) == factor else {})
+            preview = preview_cache.get(str(index))
             if not preview or preview['phase'] != 'ready':
                 raise ValueError('Replay this section while holding to generate its AI frames before saving.')
-            if hd_cache.get(str(index), {}).get('phase') == 'ready':
+            if hd_cache.get(key, {}).get('phase') == 'ready':
                 continue
             token = uuid.uuid4().hex
             CANCEL[token] = threading.Event()
-            hd = {'index': index, 'token': token, 'session': 'export', 'phase': 'queued', 'start': preview['start'], 'end': preview['end']}
+            hd = {'index': index, 'token': token, 'session': 'export', 'factor': factor, 'phase': 'queued', 'start': preview['start'], 'end': preview['end']}
             generate_chunk(job, hd)
             if hd['phase'] != 'ready':
                 raise RuntimeError(hd.get('message', 'Could not render the saved section.'))
-            hd_cache[str(index)] = hd
-            update(job, exportProgress=round(40 * (needed.index(index) + 1) / len(needed)))
+            hd_cache[key] = hd
+            update(job, exportProgress=round(40 * (needed.index((factor, index)) + 1) / len(needed)))
         for i, (start, end, speed) in enumerate(segments):
             length = end - start
             if speed == 1:
@@ -385,11 +408,12 @@ def export_video(job, segments, scope='full'):
             else:
                 first = int((start + 1e-7) / window)
                 last = math.ceil((end - 1e-7) / window)
+                factor = 8 if speed == .125 else 4
                 # Decode all AI windows on one timeline and encode this entire slowed
                 # section once. No per-window fps reset or encoder restart in the edit.
                 ai_listing = work / f'ai-{i}.txt'
                 ai_listing.write_text('\n'.join(
-                    f"file '{(folder / hd_cache[str(index)]['url'].split('/')[-1]).as_posix()}'"
+                    f"file '{(folder / hd_cache[f'{factor}:{index}']['url'].split('/')[-1]).as_posix()}'"
                     for index in range(first, last)), encoding='utf-8')
                 input_args = ['-f', 'concat', '-safe', '0', '-i', ai_listing]
                 trim_start = start - first * window
@@ -406,7 +430,7 @@ def export_video(job, segments, scope='full'):
         if job['audio']:
             filters, labels = [], []
             for i, (start, end, speed) in enumerate(segments):
-                tempo = 'atempo=0.5,atempo=0.5' if speed == .25 else f'atempo={speed}'
+                tempo = ','.join(['atempo=0.5'] * round(math.log2(1 / speed))) if speed < 1 else 'atempo=1'
                 filters.append(f'[1:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS,{tempo},apad,atrim=duration={(end-start)/speed}[a{i}]')
                 labels.append(f'[a{i}]')
             filters.append(''.join(labels) + f'concat=n={len(segments)}:v=0:a=1[a]')

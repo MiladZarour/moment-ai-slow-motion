@@ -25,7 +25,7 @@ def sections(holds, duration, fps=30):
         raise ValueError('A maximum of 50 slow-motion sections is supported per export.')
     for hold in holds:
         start, end, speed = (float(hold[k]) for k in ('start', 'end', 'speed'))
-        if not all(math.isfinite(v) for v in (start, end, speed)) or speed not in (.25, .5):
+        if not all(math.isfinite(v) for v in (start, end, speed)) or speed not in (.125, .25, .5):
             raise ValueError('Invalid slow-motion section.')
         start = max(0, min(duration, round(start * fps) / fps))
         end = max(0, min(duration, round(end * fps) / fps))
@@ -70,7 +70,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if path == '/api/health':
-            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 6, 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
+            return self.json({'engine': (ENGINE / 'rife-ncnn-vulkan.exe').exists(), 'apiVersion': 6, 'slowFactors': [2, 4, 8], 'maxSeconds': None, 'maxBytes': None, 'sectionExport': True})
         if path.startswith('/api/jobs/'):
             candidate = JOBS.get(path.split('/')[-1])
             if candidate and candidate['phase'] == 'ready':
@@ -199,7 +199,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.json({'message': 'Normal playback is still being prepared.'}, 409)
                 body = json.loads(self.rfile.read(length))
                 if path.startswith('/api/live/'):
-                    result = pipeline.live(job, body.get('session'), body.get('active') is True)
+                    result = pipeline.live(job, body.get('session'), body.get('active') is True, body.get('factor', 4))
                 else:
                     if job.get('exportState') == 'rendering':
                         return self.json({'message': 'Wait until saving finishes.'}, 409)

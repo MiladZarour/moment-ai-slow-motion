@@ -2,11 +2,14 @@
 
 Double-click **Start Moment.cmd**, then use the page at **http://127.0.0.1:8766**. Keep using that address; opening `index.html` directly does not connect to the AI engine.
 
-1. Choose or drop a video. There is no fixed duration or file-size cap; available disk space and processing time determine practical limits.
-2. Playable videos open directly at their original resolution and frame rate. Only formats the browser cannot decode are converted; that fallback displays measured progress from FFmpeg timestamps. There is no AI generation in either path.
-3. Press Play and hold the bottom-right circle, or hold **S**, for smooth ¼× or ½× playback. Release to return to normal speed. Holding from pause returns to pause on release.
-4. Each hold marks a slow-motion section. **Right-click a section badge or tap its ⋯ button**, then choose **Save this section as MP4** to export only that slowed clip, with audio. You can also right-click the video while the playhead is inside a marked section. Click **Download section MP4** when rendering finishes. The menu also lets you remove a section.
-5. **Save full video** is the separate option for the entire clip, with marked sections slowed down and remaining footage at normal speed. Later holds replace overlapping parts in the full edit. Audio is stretched with pitch preserved.
+1. Choose or drop a video. There is no fixed duration or file-size cap; disk space and processing time determine practical limits.
+2. In **Pick your moment**, enter start/end times in seconds, drag the range handles, or scrub the player and choose **Use playhead**.
+3. Choose **2x**, **4x**, or **8x** slower and click **Create slow-motion clip**. Only the selected range is requested. Frame generation can be cancelled before final rendering begins.
+4. The result appears above the editor: **Plain slowdown** beside **AI slow motion**, both at the rendered speed. **Play both**, replay, the shared timeline, audio, and fullscreen control the comparison together. **Download AI clip** saves only the selected moment as MP4, including audio when present. Changing settings keeps the last result accurately labeled until a new clip is created.
+5. For a quick live preview, hold the corner control or **S**. Releasing marks a moment under **Moments marked with Hold**. Right-click a marked moment or use its menu to save it. **Save full edit** remains available for the complete video with marked speed changes.
+
+Compatible videos play directly at original quality. Only incompatible formats require conversion, with measured progress. Nothing is sent to a cloud service. **Start Moment.cmd** upgrades an idle older engine so that 8x generation is available.
+
 
 The app uses **RIFE v4.6** through **rife-ncnn-vulkan**. The browser checks whether it can decode the selected file. If it can, the app uses the original file directly: no full-video conversion or downscaling. Only incompatible formats get a 30 fps playback copy, with measured conversion progress. AI windows and exported edits fit within 1280?720. **No AI interpolation runs on upload or during normal playback.**
 
@@ -26,4 +29,4 @@ Engine source and bundled license: https://github.com/nihui/rife-ncnn-vulkan (MI
 
 Validation: `python -m unittest discover -s tests` covers section timing, overlap resolution, and sub-frame boundary handling. GPU pipeline and browser tests use generated video fixtures; see `VALIDATION.md` for recorded results.
 
-Frame continuity: source frames are sampled on one global frame grid with decode overlap. Window boundaries use 15 source frames, rather than assuming every video is 30 fps. RIFE receives exactly four outputs per input frame; context/end padding is trimmed. Each saved slow-motion section is encoded continuously. The player targets roughly three source seconds of lookahead while held.
+Frame continuity: source frames are sampled on one global frame grid with decode overlap. Window boundaries use 15 source frames, rather than assuming every video is 30 fps. RIFE receives exactly four outputs per input frame for 2x/4x modes and eight for 8x mode; context/end padding is trimmed. The 8x mode generates additional AI frames rather than stretching a 4x render. Preview and export caches are separate for the two interpolation factors. Each saved slow-motion section is encoded continuously. The player targets roughly three source seconds of lookahead while held. Higher interpolation factors require more GPU work.

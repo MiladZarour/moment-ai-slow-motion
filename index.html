@@ -3,35 +3,57 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Moment — Hold to slow</title>
+  <title>Moment — AI slow-motion studio</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <header><a class="brand" href="./index.html"><span class="brand-icon">◒</span> moment<span class="brand-dot">.</span></a><span class="local-badge"><i></i> Local video playground</span></header>
-    <section class="intro"><div class="eyebrow">AI FRAME INTERPOLATION · POWERED BY RIFE</div><h1>Make the good parts<br><em>last a little longer.</em></h1><p>Load a video. Let AI fill the gaps. Hold to slow. Save your moment.</p></section>
-    <section class="studio" aria-label="Video studio">
-      <div class="studio-bar"><span><span class="small-dot"></span> YOUR CANVAS</span><span id="fileName">No video selected</span></div>
+<main>
+  <header><a class="brand" href="./index.html"><span class="brand-icon">◒</span> moment<span class="brand-dot">.</span></a><span class="local-badge"><i></i> Private. On your PC.</span></header>
+  <section class="intro"><div class="eyebrow">YOUR PERSONAL SLOW-MOTION STUDIO</div><h1>Some moments deserve<br><em>a little more time.</em></h1><p>Choose the moment. Let AI fill in the detail. Make it yours.</p><div class="steps"><span><b>01</b> Add your video</span><span><b>02</b> Pick a moment</span><span><b>03</b> Compare & save</span></div></section>
+  <div class="workspace">
+    <section class="studio" aria-label="Video workspace">
+      <div class="studio-bar"><span><span class="small-dot"></span> ORIGINAL VIDEO</span><span id="fileName">Your next great moment</span></div>
       <div class="stage" id="stage">
         <video id="video" playsinline preload="metadata"></video>
         <video id="aiVideo" class="ai-video" playsinline preload="auto"></video>
-        <div id="bufferTag" class="buffer-tag" hidden>Generating AI frames on your GPU…</div>
-        <div class="empty" id="empty"><div class="upload-icon">↥</div><h2>Every video has a moment.</h2><p>Drop yours here to find it.</p><button class="primary" id="choose">Choose a video <span>↗</span></button><small>No fixed duration limit · processed on your PC</small></div>
-        <div class="slow-tag" id="slowTag">● &nbsp; SLOW MOTION <span id="liveSpeed">0.25×</span></div>
-        <button id="hold" class="hold" disabled aria-label="Hold for slow motion"><span class="hold-symbol">◔</span><span>HOLD TO SLOW</span><small>Release to return to 1×</small></button>
+        <div id="bufferTag" class="buffer-tag" hidden>Preparing your AI preview…</div>
+        <div class="empty" id="empty"><div class="upload-icon">↥</div><h2>Find the moment worth keeping.</h2><p>Drop a video here, or choose one from your device.</p><button class="primary" id="choose">Choose a video <span>↗</span></button><small>No fixed duration limit. Nothing goes to the cloud.</small></div>
+        <div class="slow-tag" id="slowTag">● &nbsp; AI SLOW MOTION <span id="liveSpeed">0.25×</span></div>
+        <button id="hold" class="hold" disabled aria-label="Hold for slow motion"><span class="hold-symbol">◔</span><span>HOLD TO PREVIEW</span><small>or hold the S key</small></button>
         <div class="drop-overlay">Drop your video here</div>
       </div>
       <div class="transport"><button id="play" class="play" disabled aria-label="Play">▶</button><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="100" value="0" step="0.01" aria-label="Video position" disabled><span id="duration">0:00</span><button id="mute" class="icon-button" disabled aria-label="Mute">♪</button><button id="full" class="icon-button" disabled aria-label="Fullscreen">⛶</button></div>
-      <div class="settings"><div class="speed-setting"><span>Slow it down to</span><div class="speeds" aria-label="Slow motion speed"><button data-speed="0.25" aria-pressed="true" class="selected">¼×</button><button data-speed="0.5" aria-pressed="false">½×</button></div></div><button id="replace" class="text-button">↥ &nbsp; Change video</button></div>
-      <div class="ai-panel"><div class="ai-heading"><span id="aiLabel">AI engine · checking connection</span><span id="aiDetail">Local GPU processing</span></div><progress id="progress" max="100" value="0" aria-label="AI frame preparation"></progress><p id="aiMessage">Open this app through Start Moment.cmd to enable AI slow motion.</p></div>
-      <div class="edit-panel"><div class="edit-heading"><div><strong>Your slow-motion sections</strong><p id="editHint">Hold the corner during playback to mark a section.</p></div><button id="clear" class="text-button" disabled>Clear sections</button></div><div id="sections" class="sections"></div><div class="export-row"><span id="exportInfo">Right-click a section to save just that clip, or save the full video.</span><button id="save" class="primary" disabled>Save MP4 ↓</button><a id="download" class="download" hidden download>Download MP4 ↓</a></div></div>
+      <div class="player-note"><span>✦ Hold the corner or <kbd>S</kbd> for a live AI preview.</span><button id="replace" class="text-button">Change video ↗</button></div>
+      <details class="processing-details"><summary>Processing details <span id="aiLabel">Connecting…</span></summary><div class="ai-panel"><div class="ai-heading"><span id="aiDetail">Local processing</span></div><progress id="progress" max="100" value="0" aria-label="Video preparation"></progress><p id="aiMessage">Open this app through Start Moment.cmd to connect.</p></div></details>
+      <details id="markedMoments" class="marked-panel"><summary>Moments marked with Hold <span id="markedCount">0</span></summary><div class="edit-panel"><div class="edit-heading"><div><strong>Moments marked while holding</strong><p id="editHint">Release the hold control to mark a moment.</p></div><button id="clear" class="text-button" disabled>Clear</button></div><div id="sections" class="sections"></div><div class="export-row"><span id="exportInfo">Right-click a marked moment to save just that clip.</span><button id="save" class="secondary" disabled>Save full edit ↓</button><a id="download" class="download" hidden download>Download MP4 ↓</a></div></div></details>
     </section>
-    <div class="footnotes"><p><span>✦</span> Press & hold the corner button, or hold <kbd>S</kbd>, for slow motion.</p><p>Made for the moments between frames.</p></div>
-    <p class="status" id="status" role="status">Your video stays on this PC. AI generation starts when you hold.</p>
-    <input id="file" type="file" accept="video/*" hidden>
-  </main>
-  <div id="sectionMenu" class="section-menu" role="menu" aria-label="Slow-motion section actions" hidden><button id="saveSection" role="menuitem">Save this section as MP4 ?</button><button id="removeSection" role="menuitem">Remove section</button></div>
-  <script src="live.js"></script>
-  <script src="app.js"></script>
+    <aside class="inspector" aria-label="Create a slow-motion clip">
+      <div class="panel-top"><span class="eyebrow">MAKE A CLIP</span><span class="tiny-badge">AI frames</span></div>
+      <h2>Pick your moment.</h2><p class="panel-description">Select the part you want to slow down. Keep the rest of your video out of the export.</p>
+      <div class="field-heading"><span>01 — SELECT A RANGE</span></div>
+      <div class="time-fields"><label>Start <input id="selectionStart" type="number" min="0" value="0" step="0.001" aria-label="Selection start in seconds" disabled><button id="markStart" disabled>Use playhead</button></label><span class="field-arrow">→</span><label>End <input id="selectionEnd" type="number" min="0" value="0" step="0.001" aria-label="Selection end in seconds" disabled><button id="markEnd" disabled>Use playhead</button></label></div>
+      <div id="selectionRail" class="selection-rail"><div></div><input id="selectionStartRange" type="range" min="0" max="1" value="0" aria-label="Range start" disabled><input id="selectionEndRange" type="range" min="0" max="1" value="1" aria-label="Range end" disabled></div>
+      <small class="field-help">Times are in seconds. Scrub the video, then use the playhead to mark either end.</small>
+      <div class="field-heading"><span>02 — SLOW IT DOWN</span></div>
+      <div class="speeds" aria-label="Slow-motion speed"><button data-speed="0.5" aria-pressed="false"><strong>2×</strong><small>slower</small></button><button data-speed="0.25" aria-pressed="true" class="selected"><strong>4×</strong><small>slower</small></button><button data-speed="0.125" aria-pressed="false"><strong>8×</strong><small>slower</small></button></div>
+      <p id="selectionSummary" class="selection-summary">Choose a video to select your moment.</p>
+      <div class="output-line"><span>Finished clip</span><strong>MP4 · up to 720p</strong></div>
+      <button id="renderSelection" class="primary render-button" disabled>Create slow-motion clip <span>↗</span></button>
+      <p class="private-note">✧ Processed on your PC. No account or cloud upload.</p>
+      <div id="selectionWork" class="selection-work" role="status" hidden><div><strong id="workTitle">Creating your clip</strong><button id="cancelSelection" class="text-button" hidden>Cancel</button></div><progress id="workProgress" max="100" value="0" aria-label="Selected clip progress"></progress><p id="workMessage"></p></div>
+    </aside>
+  </div>
+  <section id="comparison" class="comparison" hidden aria-label="Compare AI slow motion with plain slow motion">
+    <div class="comparison-heading"><div><div class="eyebrow">SAME MOMENT. SAME SPEED.</div><h2>See what the extra frames do.</h2><p id="resultCaption"></p></div><div class="result-actions"><button id="editSelection" class="secondary">Edit moment</button><a id="resultDownload" class="primary download-primary" download>Download AI clip ↓</a></div></div>
+    <p id="resultSettingsNotice" class="result-notice" hidden></p>
+    <div class="compare-grid"><div class="compare-card"><div class="compare-label"><span class="small-dot"></span><strong>Plain slowdown</strong><b id="plainSpeed" class="speed-badge">4× slower</b></div><div class="compare-screen"><video id="plainVideo" playsinline muted preload="metadata"></video><span class="video-caption">Original frames</span></div></div><div class="compare-card ai-result"><div class="compare-label"><span class="small-dot"></span><strong>AI slow motion</strong><b id="aiSpeed" class="speed-badge">4× slower</b></div><div class="compare-screen"><video id="resultVideo" playsinline preload="metadata"></video><span class="video-caption">AI-generated in-between frames</span></div></div></div>
+    <div class="comparison-controls"><div class="compare-buttons"><button id="comparePlay" class="secondary" disabled>▶ Play both</button><button id="compareReplay" class="icon-button" disabled aria-label="Replay both videos">↺</button><span id="compareElapsed">0:00</span><input id="compareTimeline" type="range" min="0" max="1" value="0" step="any" disabled aria-label="Comparison position"><span id="compareDuration">0:00</span><button id="compareMute" class="secondary" disabled aria-label="Mute comparison audio" aria-pressed="false">Sound on ♪</button><button id="compareFullscreen" class="icon-button" aria-label="Fullscreen comparison">⛶</button></div><p id="comparisonStatus">One play button and timeline control both videos. Audio plays from the finished AI clip.</p></div>
+  </section>
+  <p class="status" id="status" role="status">Your video stays on this PC. AI processing starts when you preview or create a clip.</p>
+  <footer><a class="footer-brand" href="./index.html">moment.</a><span>A little more time for the good parts.</span></footer>
+  <input id="file" type="file" accept="video/*" hidden>
+</main>
+<div id="sectionMenu" class="section-menu" role="menu" aria-label="Slow-motion section actions" hidden><button id="saveSection" role="menuitem">Save this section as MP4 ↓</button><button id="removeSection" role="menuitem">Remove section</button></div>
+<script src="live.js"></script><script src="app.js"></script>
 </body>
 </html>

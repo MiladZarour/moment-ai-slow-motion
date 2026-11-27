@@ -54,7 +54,7 @@ class LiveSlowPlayer {
     this.session = session;
     this.callbacks.state('buffering', 'Building a short AI buffer for continuous playback. Keep holding…');
     try {
-      await this.request(`/api/live/${job}`, { session, active: true });
+      await this.request(`/api/live/${job}`, { session, active: true, factor: speed === .125 ? 8 : 4 });
       if (session !== this.session) return;
       const media = new MediaSource(); this.media = media;
       const url = URL.createObjectURL(media); this.mediaUrl = url;

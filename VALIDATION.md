@@ -54,3 +54,13 @@ Downloaded release archive SHA-256:
 `D8E4D772D26CD8006EF0AD0BC82EB191B53C68677D1AE2F42506D74CBBBEA606`
 
 Limitations: full-video preparation is required before AI hold playback. Output is limited to 720p bounds and 30 fps export; inputs are normalized to 30 fps before 4× interpolation. HDR preservation and Samsung's proprietary live inference are not implemented. Quality on arbitrary real-world footage has not been benchmarked.
+
+## Range editor update - 27 November 2026
+
+A Chromium end-to-end test uploaded a 3-second fixture with zero AI calls on load, selected 0.5-1.5 seconds without hold marks, generated a 4-second quarter-speed MP4 with audio, played the plain/AI comparison, and downloaded the clip. Hold preview still records a moment. Cancellation before final rendering restored the selection controls. Desktop and 390px mobile screenshots were inspected; no horizontal overflow or uncaught page errors occurred. A focused follow-up verified that paused comparison clocks align within 0.02 source seconds and that marked moments expand only when present. No backend API or model changes were made in this update.
+
+## Side-by-side comparison and 8x update - 27 November 2026
+
+The finished comparison now appears above the editor, with matching rendered-speed labels, shared play/pause, replay, seeking, audio, and fullscreen. Both cards remain side by side at 390px. Changed selection settings display a notice while the last result retains its original speed labels.
+
+Real GPU and Chromium integration passed: a 0.5-second source selection at 8x produced a 4-second MP4 with 120 video frames and audio. Preview windows contained 120 frames at 240 fps for a 30 fps source. The first eight decoded saved frames had distinct hashes, confirming additional interpolation rather than repeated 4x frames. Shared playback used 0.125 speed for the plain source and normal playback for the rendered clip; a paused seek aligned within 0.02 source seconds. Download, replay, and mute passed. Rendering the same selection at 4x and switching back to 8x reused separate caches without additional AI calls. The 8x live MediaSource hold played and recorded a marked section. No uncaught page errors occurred. Desktop and mobile screenshots were inspected. Six unit tests pass, including mixed 8x/4x export timing. API version remains 6 with a new slowFactors capability advertisement; the launcher upgrades an idle older engine.

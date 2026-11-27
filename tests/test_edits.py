@@ -22,6 +22,12 @@ class EditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sections([hold], 3)
 
+    def test_eight_times_duration_and_mixed_speeds(self):
+        result = sections([{'start': .5, 'end': 1, 'speed': .125},
+                           {'start': 1, 'end': 2, 'speed': .25}], 3)
+        self.assertEqual(result, [(0, .5, 1), (.5, 1, .125), (1, 2, .25), (2, 3, 1)])
+        self.assertEqual(sum((e - s) / rate for s, e, rate in result), 9.5)
+
     def test_native_29fps_section_grid(self):
         result = sections([{'start': 15/29, 'end': 45/29, 'speed': .25}], 3, '29')
         self.assertAlmostEqual(result[1][0], 15/29)
